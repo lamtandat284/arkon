@@ -13,7 +13,8 @@ import uuid
 import zipfile
 from typing import Optional
 
-from arq import cron, func as arq_func
+from arq import cron
+from arq import func as arq_func
 from arq.connections import ArqRedis, RedisSettings, create_pool
 from loguru import logger
 from sqlalchemy import select
@@ -48,7 +49,6 @@ async def get_arq_pool() -> ArqRedis:
 
 from app.utils.progress import ProgressTracker  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Ingestion tasks
 # ---------------------------------------------------------------------------
@@ -61,7 +61,7 @@ async def ingest_file_task(ctx: dict, source_id: str):
     File must already be uploaded to MinIO before this task is enqueued.
     """
     from app.database import async_session_factory
-    from app.database.models import KnowledgeType, Source, SourceImage
+    from app.database.models import Source, SourceImage
     from app.services.image_service import extract_images
     from app.services.kb_service import (
         _extract_text_from_file,
@@ -141,13 +141,6 @@ async def ingest_file_task(ctx: dict, source_id: str):
             await session.commit()
             await tracker.update(50, f"Outline: {len(source.outline_json or [])} top-level sections")
 
-            # --- Step 5: Resolve KnowledgeType context (52%) ---
-            kt_slug = kt_name = kt_desc = None
-            if source.knowledge_type_id:
-                kt = await session.get(KnowledgeType, source.knowledge_type_id)
-                if kt:
-                    kt_slug, kt_name, kt_desc = kt.slug, kt.name, kt.description
-
             # --- Step 6: Enqueue captioning (if images) OR MRP directly ---
             # Captioning MUST complete before MAP so wiki pages get real image captions
             # baked into full_text. caption_images_task chains into ingest_map_reduce_task
@@ -196,7 +189,7 @@ async def ingest_file_task(ctx: dict, source_id: str):
 async def ingest_url_task(ctx: dict, source_id: str):
     """arq task: URL ingestion → wiki compilation."""
     from app.database import async_session_factory
-    from app.database.models import KnowledgeType, Source
+    from app.database.models import Source
     from app.services.kb_service import _extract_text_from_url
     from app.services.source_outline import assemble_full_text, build_outline
 
@@ -234,12 +227,6 @@ async def ingest_url_task(ctx: dict, source_id: str):
             source.full_text = full_text
             source.page_offsets = page_offsets
             await session.commit()
-
-            kt_slug = kt_name = kt_desc = None
-            if source.knowledge_type_id:
-                kt = await session.get(KnowledgeType, source.knowledge_type_id)
-                if kt:
-                    kt_slug, kt_name, kt_desc = kt.slug, kt.name, kt.description
 
             await tracker.update(55, "Queuing compilation pipeline...")
             pool = await get_arq_pool()
@@ -699,6 +686,7 @@ async def ingest_map_reduce_task(ctx: dict, source_id: str):
         except BaseException as e:
             logger.error(f"MAP-REDUCE failed for {source_id}: {e}")
             error_msg = str(e)[:500]
+            progress_msg = f"Error: {str(e)[:200]}"
 
             async def _mark_error_mr() -> None:
                 from app.database import async_session_factory as _sf
@@ -709,7 +697,7 @@ async def ingest_map_reduce_task(ctx: dict, source_id: str):
                         src.status = "error"
                         src.error_message = error_msg
                         src.progress = 0
-                        src.progress_message = f"Error: {str(e)[:200]}"
+                        src.progress_message = progress_msg
                         await err_session.commit()
 
             try:
@@ -778,6 +766,7 @@ async def ingest_refine_task(ctx: dict, source_id: str):
         except BaseException as e:
             logger.error(f"REFINE failed for {source_id}: {e}")
             error_msg = str(e)[:500]
+            progress_msg = f"Error: {str(e)[:200]}"
 
             async def _mark_error_refine() -> None:
                 from app.database import async_session_factory as _sf
@@ -788,7 +777,7 @@ async def ingest_refine_task(ctx: dict, source_id: str):
                         src.status = "error"
                         src.error_message = error_msg
                         src.progress = 0
-                        src.progress_message = f"Error: {str(e)[:200]}"
+                        src.progress_message = progress_msg
                         await err_session.commit()
 
             try:
@@ -808,7 +797,7 @@ async def regenerate_plan_task(ctx: dict, source_id: str, user_note: str):
     from app.ai.mrp.reducer import reconcile_with_kb, run_planning_call
     from app.ai.registry import ProviderRegistry
     from app.database import async_session_factory
-    from app.database.models import KnowledgeType, Source, SourceCompilationPlan
+    from app.database.models import Source, SourceCompilationPlan
 
     sid = uuid.UUID(source_id)
 
@@ -921,7 +910,7 @@ async def caption_images_task(ctx: dict, source_id: str):
         registry = ProviderRegistry(session)
         vision_provider = await registry.get_vision()
         if not vision_provider:
-            logger.info(f"caption_images_task: no vision provider configured, skipping")
+            logger.info("caption_images_task: no vision provider configured, skipping")
             return
 
         rows = (await session.execute(

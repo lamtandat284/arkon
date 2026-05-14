@@ -13,11 +13,8 @@ Steps:
 """
 
 import asyncio
-import json
-import re
 import string
-import uuid
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 from loguru import logger
 from sqlalchemy import select
@@ -175,7 +172,7 @@ def exact_dedup_concepts(raw_concepts: list[dict]) -> list[dict]:
 async def embedding_dedup_entities(
     entities: list[dict],
     embedding_provider: EmbeddingProvider,
-) -> list[dict]:
+) -> Union[list[dict], tuple[dict[int, int], list[tuple[int, int]], list[list[float]], list[dict]]]:
     """
     Merge entities whose name embeddings are very similar (> MERGE_THRESHOLD)
     and have the same type. Returns a reduced list of canonical entities.
@@ -319,9 +316,8 @@ async def reconcile_with_kb(
     For each canonical entity/concept, search existing wiki pages.
     Returns {item_name: {"action": "CREATE"|"UPDATE"|"MAYBE", "page_slug": str|None, "similarity": float}}
     """
-    from app.services import wiki_service
-
     from app.ai.mrp.pipeline import _resolve_wiki_scopes
+    from app.services import wiki_service
     wiki_scopes = await _resolve_wiki_scopes(session, source)
 
     all_items = [("entity", e["name"], e) for e in entities] + \
@@ -503,7 +499,6 @@ async def run_planning_call(
     user_note: Optional[str] = None,
 ) -> dict:
     """Single LLM call to produce the Compilation Plan JSON."""
-    n_chars = len(source.full_text or "")
     # Calculate target based on the actual number of extracted concepts rather than just document length
     total_extracted_items = len(canonical_entities) + len(canonical_concepts)
     
@@ -584,7 +579,7 @@ async def run_reduce_phase(
     source,
     chunk_extracts: list,
     llm: LLMProvider,
-    embedding_provider: EmbeddingProvider,
+    embedding_provider: Optional[EmbeddingProvider],
     kt_name: Optional[str],
     kt_desc: Optional[str],
     tracker: ProgressTracker,
@@ -656,7 +651,6 @@ async def run_reduce_phase(
     plan_dict["_concepts"] = canonical_concepts
 
     # 2.8 Persist plan (upsert: safe to re-run)
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
 
     existing = (await session.execute(
         select(SourceCompilationPlan).where(SourceCompilationPlan.source_id == source.id)

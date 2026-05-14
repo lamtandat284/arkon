@@ -13,7 +13,6 @@ Phase 5 (COMMIT) is implemented inline here. It reuses existing wiki_service
 functions (apply_create / apply_update) and embedding_storage utilities.
 """
 
-import asyncio
 import uuid
 from typing import Optional
 
@@ -67,7 +66,7 @@ async def run_commit_phase(
     fallback). All pages are flushed then committed in a single transaction.
     """
     from app.ai.mrp.merger import merge_page_content
-    from app.database.models import Source, SourceCompilationPlan
+    from app.database.models import Source
     from app.services import wiki_service
     from app.services.embedding_storage import (
         compute_content_hash,
@@ -98,12 +97,13 @@ async def run_commit_phase(
         for pr in page_results:
             try:
                 # Acquire advisory lock per (slug, scope) to prevent race conditions
-                from sqlalchemy import select, func
+                from sqlalchemy import func, select
                 lock_key = func.hashtext(f"{pr.slug}:{scope_type}:{scope_id}")
                 await session.execute(select(func.pg_advisory_xact_lock(lock_key)))
 
                 # Reset action per scope — each scope processes independently
                 action = pr.action
+                page = None
 
                 if action == "CREATE":
                     # Check if already created in this scope by a concurrent pipeline
