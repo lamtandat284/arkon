@@ -320,8 +320,10 @@ async def reconcile_with_kb(
     """
     from app.services import wiki_service
 
-    scope_type = source.scope_type or "global"
-    scope_id = source.scope_id
+    from app.ai.mrp.pipeline import _resolve_wiki_scopes
+    wiki_scopes = await _resolve_wiki_scopes(session, source)
+    # Use the primary scope for KB reconciliation; commit phase handles per-scope fallbacks.
+    scope_type, scope_id = wiki_scopes[0]
 
     all_items = [("entity", e["name"], e) for e in entities] + \
                 [("concept", c["term"], c) for c in concepts]

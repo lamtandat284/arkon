@@ -434,6 +434,8 @@ async def update_source(
     db: AsyncSession = Depends(get_db),
     _user: Employee = require_permission("doc:edit"),
 ):
+    from app.services import wiki_service
+
     source = await db.get(Source, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Source not found")
@@ -445,18 +447,59 @@ async def update_source(
         source.scope_type = body.scope_type
         source.scope_id = body.scope_id
 
-    # Update department M2M
+    # Detect department changes and trigger re-ingestion when needed
+    dept_changed = False
     if body.department_ids is not None:
-        # Delete existing
+        # Permission check: own_dept users may only assign their own department
+        perms = _get_user_permissions(_user)
+        if _user.role != "admin" and "doc:edit:all" not in perms:
+            for did in body.department_ids:
+                if did != _user.department_id:
+                    raise HTTPException(403, "You can only assign documents to your own department")
+
+        old_dept_rows = (await db.execute(
+            select(SourceDepartment.department_id).where(SourceDepartment.source_id == source_id)
+        )).scalars().all()
+        old_dept_ids = set(old_dept_rows)
+        new_dept_ids = set(body.department_ids)
+
+        if old_dept_ids != new_dept_ids and source.status == "ready":
+            dept_changed = True
+
+            # Snapshot old scopes before detaching so we can regenerate their indexes
+            from app.ai.mrp.pipeline import _resolve_wiki_scopes
+            old_scopes = await _resolve_wiki_scopes(db, source)
+
+            # Detach source from wiki pages in old scopes
+            await wiki_service.detach_source_from_wiki(db, source.id)
+
+            # Regenerate index for each old scope after detach
+            for st, sid in old_scopes:
+                await wiki_service.regenerate_index(db, scope_type=st, scope_id=sid)
+
+        # Replace M2M rows
         await db.execute(
             sql_delete(SourceDepartment).where(SourceDepartment.source_id == source_id)
         )
-        # Insert new
         for did in body.department_ids:
             db.add(SourceDepartment(source_id=source_id, department_id=did))
 
     await log_audit(db, _user, "update", "source", str(source.id), reason=source.title)
     await db.flush()
+
+    if dept_changed:
+        source.status = "processing"
+        source.progress = 0
+        source.progress_message = "Re-queued after department change..."
+        source.error_message = None
+        await db.flush()
+
+        pool = await get_arq_pool()
+        job = await pool.enqueue_job("ingest_map_reduce_task", str(source_id))
+        if job:
+            source.job_id = job.job_id
+
+    await db.commit()
 
     source = (await db.execute(
         select(Source)
