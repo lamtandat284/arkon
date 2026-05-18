@@ -59,6 +59,16 @@ export function WikiGraph({
   const router = useRouter();
   const containerRef = React.useRef<HTMLDivElement>(null);
   const fgRef = React.useRef<ForceGraphInstance>(null);
+  // ForceGraph2D is dynamic(); on first load the chunk can resolve AFTER the
+  // first batch of nodes lands, so fgRef.current is null when the forces effect
+  // first tries to run — leaving default forces (incl. center) active and the
+  // nodes collapse to (0,0). Track readiness via a callback ref so the effect
+  // re-fires once the instance is actually attached.
+  const [fgReady, setFgReady] = React.useState(false);
+  const setFgRef = React.useCallback((instance: ForceGraphInstance | null) => {
+    fgRef.current = instance;
+    setFgReady(!!instance);
+  }, []);
   const [dimensions, setDimensions] = React.useState({ w: 800, h: height ?? 400 });
   // Hover state lives in a ref so canvas redraw callbacks can read it without
   // re-rendering the whole component (which would otherwise reset the sim).
@@ -232,7 +242,7 @@ export function WikiGraph({
     }
 
     fg.d3ReheatSimulation();
-  }, [nodes, components, componentTargetX, centerSlug, dimensions.w, dimensions.h, mini]);
+  }, [fgReady, nodes, components, componentTargetX, centerSlug, dimensions.w, dimensions.h, mini]);
 
   // Auto fit-to-canvas when the simulation cools down.
   const hasFitRef = React.useRef(false);
@@ -455,7 +465,7 @@ export function WikiGraph({
       }}
     >
       <ForceGraph2D
-        ref={fgRef}
+        ref={setFgRef}
         width={dimensions.w}
         height={dimensions.h}
         graphData={graphData}
