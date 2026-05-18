@@ -10,6 +10,34 @@ import { wikiTypeIcon, wikiTypeColor, wikiTypeGroupLabel } from "./wiki-type-bad
 
 const GROUP_ORDER = ["entity", "concept", "topic", "source"];
 
+// Scope type ordering for grouped view: global → department → project.
+const SCOPE_TYPE_ORDER: Record<string, number> = {
+  global: 0,
+  department: 1,
+  project: 2,
+};
+
+const SCOPE_ICONS: Record<string, string> = {
+  global: "public",
+  department: "corporate_fare",
+  project: "folder_special",
+};
+
+function scopeGroupKey(p: WikiPageSummary): string {
+  const st = p.scope_type || "global";
+  return p.scope_id ? `${st}:${p.scope_id}` : st;
+}
+
+function scopeGroupLabel(p: WikiPageSummary): string {
+  const st = p.scope_type || "global";
+  if (st === "global") return "Global";
+  return p.scope_name || (st === "department" ? "Department" : "Workspace");
+}
+
+function pageKey(p: WikiPageSummary): string {
+  return `${p.slug}-${p.scope_type || "global"}-${p.scope_id ?? "none"}`;
+}
+
 function useDebounce<T>(value: T, delay: number): T {
   const [debounced, setDebounced] = React.useState(value);
   React.useEffect(() => {
@@ -25,6 +53,7 @@ export function WikiPageTree({
   pagesUrl,
   linkQueryParams,
   onPageSelect,
+  groupByScope = false,
 }: {
   activeSlug?: string;
   onDeleted?: () => void;
@@ -34,6 +63,8 @@ export function WikiPageTree({
   linkQueryParams?: string;
   /** If provided, clicks call this instead of navigating via Link */
   onPageSelect?: (slug: string) => void;
+  /** When true, render a 2-level tree: scope → page_type → pages (used in /wiki). */
+  groupByScope?: boolean;
 }) {
   const pathname = usePathname();
   const [pages, setPages] = React.useState<WikiPageSummary[]>([]);
@@ -115,9 +146,73 @@ export function WikiPageTree({
     return map;
   }, [filtered]);
 
+  // Scope-then-type grouping (used when groupByScope=true).
+  // Outer map keyed by scopeGroupKey(); value is { label, scope_type, scope_id, byType }.
+  const scopeGrouped = React.useMemo(() => {
+    type ScopeBucket = {
+      key: string;
+      label: string;
+      scope_type: string;
+      scope_id: string | null;
+      byType: Map<string, WikiPageSummary[]>;
+      total: number;
+    };
+    const map = new Map<string, ScopeBucket>();
+    for (const p of filtered) {
+      if (p.page_type === "index" || p.page_type === "log") continue;
+      const k = scopeGroupKey(p);
+      let bucket = map.get(k);
+      if (!bucket) {
+        bucket = {
+          key: k,
+          label: scopeGroupLabel(p),
+          scope_type: p.scope_type || "global",
+          scope_id: p.scope_id ?? null,
+          byType: new Map(),
+          total: 0,
+        };
+        map.set(k, bucket);
+      }
+      const t = p.page_type;
+      if (!bucket.byType.has(t)) bucket.byType.set(t, []);
+      bucket.byType.get(t)!.push(p);
+      bucket.total += 1;
+    }
+    // Sort: scope type order first, then label alphabetical.
+    return Array.from(map.values()).sort((a, b) => {
+      const ao = SCOPE_TYPE_ORDER[a.scope_type] ?? 99;
+      const bo = SCOPE_TYPE_ORDER[b.scope_type] ?? 99;
+      if (ao !== bo) return ao - bo;
+      return a.label.localeCompare(b.label);
+    });
+  }, [filtered]);
+
   const totalCount = filtered.filter(
     (p) => p.page_type !== "index" && p.page_type !== "log"
   ).length;
+
+  // Expanded state for scope-level headers in groupByScope mode.
+  // Default: expand global; collapse the rest to keep the tree compact.
+  const [expandedScopes, setExpandedScopes] = React.useState<Set<string>>(
+    new Set(["global"]),
+  );
+  React.useEffect(() => {
+    // When scope buckets first arrive, ensure global stays expanded and any
+    // bucket containing the active page is expanded.
+    if (!groupByScope || scopeGrouped.length === 0) return;
+    setExpandedScopes((prev) => {
+      const next = new Set(prev);
+      next.add("global");
+      if (activeSlug) {
+        for (const b of scopeGrouped) {
+          for (const ps of b.byType.values()) {
+            if (ps.some((p) => p.slug === activeSlug)) next.add(b.key);
+          }
+        }
+      }
+      return next;
+    });
+  }, [groupByScope, scopeGrouped, activeSlug]);
 
   const toggleGroup = (type: string) =>
     setExpandedGroups((prev) => {
@@ -126,7 +221,90 @@ export function WikiPageTree({
       return next;
     });
 
+  const toggleScope = (key: string) =>
+    setExpandedScopes((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+
   const currentSlug = activeSlug ?? pathname.replace(/^\/wiki\//, "");
+
+  // Renders one leaf row (page link + delete button). Used in both flat and
+  // group-by-scope tree modes so the row markup stays in one place.
+  const renderPageItem = (page: WikiPageSummary) => {
+    const isActive = page.slug === currentSlug;
+    const isArmed = armedSlug === page.slug;
+    const isDeleting = deletingSlug === page.slug;
+    const linkSuffix = linkQueryParams
+      ? linkQueryParams
+      : page.scope_type && page.scope_type !== "global" && page.scope_id
+        ? `?scopeType=${page.scope_type}&scopeId=${page.scope_id}`
+        : "";
+    return (
+      <div
+        key={pageKey(page)}
+        data-slug={page.slug}
+        className={cn(
+          "group flex items-center gap-1 rounded-lg mx-1 transition-all",
+          isActive ? "bg-primary/10" : "hover:bg-accent/50",
+        )}
+      >
+        {onPageSelect ? (
+          <button
+            onClick={() => onPageSelect(page.slug)}
+            className={cn(
+              "flex-1 flex items-center gap-2 px-2 py-1.5 text-xs min-w-0 transition-all text-left",
+              isActive ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground",
+            )}
+            title={page.summary || page.title}
+          >
+            <span className="truncate">{page.title}</span>
+          </button>
+        ) : (
+          <Link
+            href={`/wiki/${page.slug}${linkSuffix}`}
+            className={cn(
+              "flex-1 flex items-center gap-2 px-2 py-1.5 text-xs min-w-0 transition-all",
+              isActive ? "text-primary font-medium" : "text-muted-foreground hover:text-foreground",
+            )}
+            title={page.summary || page.title}
+          >
+            <span className="truncate">{page.title}</span>
+          </Link>
+        )}
+
+        {isDeleting ? (
+          <span className="material-symbols-outlined text-xs text-destructive animate-pulse mr-1.5">
+            progress_activity
+          </span>
+        ) : isArmed ? (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete(page.slug);
+            }}
+            className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-destructive text-destructive-foreground hover:bg-destructive/90 animate-pulse transition-colors"
+            title={`Click again to confirm delete "${page.title}"`}
+          >
+            Confirm
+          </button>
+        ) : (
+          <button
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              handleDelete(page.slug);
+            }}
+            className="shrink-0 mr-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
+            title={`Delete "${page.title}"`}
+          >
+            <span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span>
+          </button>
+        )}
+      </div>
+    );
+  };
 
   if (collapsed) {
     return (
@@ -197,6 +375,77 @@ export function WikiPageTree({
               />
             ))}
           </div>
+        ) : groupByScope ? (
+          scopeGrouped.length === 0 ? (
+            <p className="text-xs text-muted-foreground px-4 py-3">No pages found.</p>
+          ) : (
+            scopeGrouped.map((bucket) => {
+              const scopeExpanded = expandedScopes.has(bucket.key);
+              const typeOrder = GROUP_ORDER.filter((t) => bucket.byType.has(t));
+              return (
+                <div key={bucket.key} className="mb-2">
+                  <button
+                    onClick={() => toggleScope(bucket.key)}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent/40 transition-colors"
+                  >
+                    <span className="material-symbols-outlined text-xs text-muted-foreground">
+                      {scopeExpanded ? "expand_more" : "chevron_right"}
+                    </span>
+                    <span
+                      className="material-symbols-outlined text-xs text-muted-foreground"
+                      style={{ fontSize: 13 }}
+                    >
+                      {SCOPE_ICONS[bucket.scope_type] ?? "tune"}
+                    </span>
+                    <span className="text-xs font-semibold text-foreground uppercase tracking-wide flex-1 text-left truncate">
+                      {bucket.label}
+                    </span>
+                    <span className="text-xs text-muted-foreground tabular-nums">
+                      {bucket.total}
+                    </span>
+                  </button>
+                  {scopeExpanded && (
+                    <div className="ml-3">
+                      {typeOrder.map((type) => {
+                        const items = bucket.byType.get(type)!;
+                        const typeKey = `${bucket.key}::${type}`;
+                        const isExpanded = expandedGroups.has(typeKey);
+                        return (
+                          <div key={typeKey} className="mb-1">
+                            <button
+                              onClick={() => toggleGroup(typeKey)}
+                              className="w-full flex items-center gap-2 px-3 py-1.5 hover:bg-accent/40 transition-colors"
+                            >
+                              <span className="material-symbols-outlined text-xs text-muted-foreground">
+                                {isExpanded ? "expand_more" : "chevron_right"}
+                              </span>
+                              <span
+                                className="material-symbols-outlined text-xs"
+                                style={{ color: wikiTypeColor(type), fontSize: 13 }}
+                              >
+                                {wikiTypeIcon(type)}
+                              </span>
+                              <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex-1 text-left">
+                                {wikiTypeGroupLabel(type)}
+                              </span>
+                              <span className="text-xs text-muted-foreground tabular-nums">
+                                {items.length}
+                              </span>
+                            </button>
+                            {isExpanded && (
+                              <div className="ml-3">
+                                {items.map((page) => renderPageItem(page))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )
         ) : grouped.size === 0 ? (
           <p className="text-xs text-muted-foreground px-4 py-3">No pages found.</p>
         ) : (
@@ -227,74 +476,7 @@ export function WikiPageTree({
                 </button>
                 {isExpanded && (
                   <div className="ml-3">
-                    {items.map((page) => {
-                      const isActive = page.slug === currentSlug;
-                      const isArmed = armedSlug === page.slug;
-                      const isDeleting = deletingSlug === page.slug;
-                      return (
-                        <div
-                          key={page.slug}
-                          data-slug={page.slug}
-                          className={cn(
-                            "group flex items-center gap-1 rounded-lg mx-1 transition-all",
-                            isActive
-                              ? "bg-primary/10"
-                              : "hover:bg-accent/50"
-                          )}
-                        >
-                          {onPageSelect ? (
-                            <button
-                              onClick={() => onPageSelect(page.slug)}
-                              className={cn(
-                                "flex-1 flex items-center gap-2 px-2 py-1.5 text-xs min-w-0 transition-all text-left",
-                                isActive
-                                  ? "text-primary font-medium"
-                                  : "text-muted-foreground hover:text-foreground"
-                              )}
-                              title={page.summary || page.title}
-                            >
-                              <span className="truncate">{page.title}</span>
-                            </button>
-                          ) : (
-                            <Link
-                              href={`/wiki/${page.slug}${linkQueryParams || ""}`}
-                              className={cn(
-                                "flex-1 flex items-center gap-2 px-2 py-1.5 text-xs min-w-0 transition-all",
-                                isActive
-                                  ? "text-primary font-medium"
-                                  : "text-muted-foreground hover:text-foreground"
-                              )}
-                              title={page.summary || page.title}
-                            >
-                              <span className="truncate">{page.title}</span>
-                            </Link>
-                          )}
-
-                          {/* Delete button — 2-stage */}
-                          {isDeleting ? (
-                            <span className="material-symbols-outlined text-xs text-destructive animate-pulse mr-1.5">
-                              progress_activity
-                            </span>
-                          ) : isArmed ? (
-                            <button
-                              onClick={(e) => { e.stopPropagation(); handleDelete(page.slug); }}
-                              className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-destructive text-destructive-foreground hover:bg-destructive/90 animate-pulse transition-colors"
-                              title={`Click again to confirm delete "${page.title}"`}
-                            >
-                              Confirm
-                            </button>
-                          ) : (
-                            <button
-                              onClick={(e) => { e.preventDefault(); e.stopPropagation(); handleDelete(page.slug); }}
-                              className="shrink-0 mr-1 opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-all"
-                              title={`Delete "${page.title}"`}
-                            >
-                              <span className="material-symbols-outlined" style={{ fontSize: 14 }}>delete</span>
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {items.map((page) => renderPageItem(page))}
                   </div>
                 )}
               </div>

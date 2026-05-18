@@ -3,7 +3,7 @@
 import React from "react";
 import Link from "next/link";
 import { api } from "@/lib/api";
-import { WikiPageSummary } from "@/types/wiki";
+import { WikiPageSummary, WikiScope } from "@/types/wiki";
 import { PageHeader } from "@/components/shared/page-header";
 import { Button } from "@/components/ui/button";
 import { WikiPageTree } from "@/components/wiki/wiki-page-tree";
@@ -12,8 +12,25 @@ import { WikiTypeBadge, wikiTypeGroupLabel } from "@/components/wiki/wiki-type-b
 import { ScopeBadge } from "@/components/shared/scope-badge";
 import { WikiSearchDialog } from "@/components/wiki/wiki-search-dialog";
 import { EmptyState } from "@/components/shared/empty-state";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 
 const TYPE_TABS = ["all", "entity", "concept", "topic", "source"] as const;
+
+// Icon shown for each scope_type in the switcher trigger / dropdown.
+const SCOPE_ICONS: Record<string, string> = {
+  global: "public",
+  department: "corporate_fare",
+  project: "folder_special",
+};
+
+function scopeKey(s: { scope_type: string; scope_id: string | null }): string {
+  return s.scope_id ? `${s.scope_type}:${s.scope_id}` : s.scope_type;
+}
 
 export default function WikiIndexPage() {
   const [indexMd, setIndexMd] = React.useState<string | null>(null);
@@ -21,11 +38,29 @@ export default function WikiIndexPage() {
   const [loading, setLoading] = React.useState(true);
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [activeTab, setActiveTab] = React.useState<string>("all");
+  const [scopes, setScopes] = React.useState<WikiScope[]>([]);
+  const [selectedScope, setSelectedScope] = React.useState<WikiScope>({
+    scope_type: "global",
+    scope_id: null,
+    name: "Global",
+  });
 
+  // Fetch available scopes once
   React.useEffect(() => {
+    api<WikiScope[]>("/api/wiki/my-scopes")
+      .then((s) => setScopes(Array.isArray(s) ? s : []))
+      .catch(() => setScopes([]));
+  }, []);
+
+  // Refetch index + pages whenever the selected scope changes
+  React.useEffect(() => {
+    setLoading(true);
+    const qs = selectedScope.scope_id
+      ? `scope_type=${selectedScope.scope_type}&scope_id=${selectedScope.scope_id}`
+      : `scope_type=${selectedScope.scope_type}`;
     Promise.all([
-      api<{ content_md: string }>("/api/wiki/index"),
-      api<WikiPageSummary[]>("/api/wiki/pages?limit=200"),
+      api<{ content_md: string }>(`/api/wiki/index?${qs}`),
+      api<WikiPageSummary[]>(`/api/wiki/pages?${qs}&limit=200`),
     ])
       .then(([idx, pages]) => {
         setIndexMd(idx.content_md || null);
@@ -34,9 +69,14 @@ export default function WikiIndexPage() {
           : [];
         setAllPages(filtered);
       })
-      .catch(() => {})
+      .catch(() => {
+        setIndexMd(null);
+        setAllPages([]);
+      })
       .finally(() => setLoading(false));
+  }, [selectedScope.scope_type, selectedScope.scope_id]);
 
+  React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
@@ -71,6 +111,51 @@ export default function WikiIndexPage() {
         description="Compiled knowledge from your organization's documents."
         action={
           <div className="flex items-center gap-2">
+            {scopes.length > 1 && (
+              <DropdownMenu>
+                <DropdownMenuTrigger className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium text-foreground transition-colors">
+                  <span
+                    className="material-symbols-outlined text-base text-muted-foreground"
+                    style={{ fontSize: 16 }}
+                  >
+                    {SCOPE_ICONS[selectedScope.scope_type] ?? "tune"}
+                  </span>
+                  <span className="max-w-[160px] truncate">{selectedScope.name}</span>
+                  <span className="material-symbols-outlined text-base text-muted-foreground">
+                    expand_more
+                  </span>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[220px]">
+                  {scopes.map((s) => {
+                    const k = scopeKey(s);
+                    const active = k === scopeKey(selectedScope);
+                    return (
+                      <DropdownMenuItem
+                        key={k}
+                        onClick={() => setSelectedScope(s)}
+                        className={active ? "bg-accent/60" : ""}
+                      >
+                        <span
+                          className="material-symbols-outlined text-base mr-2 text-muted-foreground"
+                          style={{ fontSize: 16 }}
+                        >
+                          {SCOPE_ICONS[s.scope_type] ?? "tune"}
+                        </span>
+                        <span className="flex-1 truncate">{s.name}</span>
+                        {active && (
+                          <span
+                            className="material-symbols-outlined text-base ml-2 text-primary"
+                            style={{ fontSize: 16 }}
+                          >
+                            check
+                          </span>
+                        )}
+                      </DropdownMenuItem>
+                    );
+                  })}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            )}
             <Button
               variant="outline"
               onClick={() => setSearchOpen(true)}
@@ -95,7 +180,7 @@ export default function WikiIndexPage() {
 
       <div className="flex-1 flex gap-0 -mx-6 md:-mx-8 lg:-mx-10 -mb-6 md:-mb-8 lg:-mb-10 min-h-0 border-t border-border">
         {/* Page Tree */}
-        <WikiPageTree />
+        <WikiPageTree groupByScope />
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-8 py-6">
@@ -170,10 +255,15 @@ export default function WikiIndexPage() {
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {displayPages.map((page) => (
+                    {displayPages.map((page) => {
+                      const cardHref =
+                        page.scope_type && page.scope_type !== "global" && page.scope_id
+                          ? `/wiki/${page.slug}?scopeType=${page.scope_type}&scopeId=${page.scope_id}`
+                          : `/wiki/${page.slug}`;
+                      return (
                       <Link
-                        key={page.slug}
-                        href={`/wiki/${page.slug}`}
+                        key={`${page.slug}-${page.scope_type ?? "global"}-${page.scope_id ?? "none"}`}
+                        href={cardHref}
                         className="group block bg-card border border-border rounded-xl p-4 hover:border-primary/40 hover:shadow-sahara transition-all"
                       >
                         <div className="flex items-start justify-between gap-2 mb-2">
@@ -199,7 +289,8 @@ export default function WikiIndexPage() {
                           {new Date(page.updated_at).toLocaleDateString()}
                         </p>
                       </Link>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}

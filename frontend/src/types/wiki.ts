@@ -8,9 +8,16 @@ export type WikiPageSummary = {
   knowledge_type_slugs: string[];
   source_ids: string[];
   scope_type?: string;
-  scope_id?: string;
+  scope_id?: string | null;
+  scope_name?: string | null;
   version: number;
   updated_at: string;
+};
+
+export type WikiScope = {
+  scope_type: string;
+  scope_id: string | null;
+  name: string;
 };
 
 export type WikiPageDetail = WikiPageSummary & {
