@@ -22,7 +22,7 @@ async def seed_default_admin():
     from sqlalchemy import select
 
     from app.database import async_session_factory
-    from app.database.models import Department, Employee
+    from app.database.models import Department, Employee, EmployeeDepartment
     from app.services.auth_service import hash_password
 
     try:
@@ -44,9 +44,10 @@ async def seed_default_admin():
                 email=settings.default_admin_email,
                 password_hash=hash_password(settings.default_admin_password),
                 role="admin",
-                department_id=dept.id,
             )
             session.add(admin)
+            await session.flush()
+            session.add(EmployeeDepartment(employee_id=admin.id, department_id=dept.id))
             await session.flush()
 
             await session.commit()

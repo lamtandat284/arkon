@@ -171,22 +171,26 @@ async def list_sources(
     scope_level = "all" if user.role == "admin" else get_scope_level(list(perms), "doc", "read")
 
     if scope_level == "own_dept":
-        # Only show: global docs (no departments) OR docs in user's department
-        dept_filter = or_(
-            # Source has no departments → global
-            ~exists(
-                select(SourceDepartment.source_id)
-                .where(SourceDepartment.source_id == Source.id)
-            ),
-            # Source has user's department
-            exists(
-                select(SourceDepartment.source_id)
-                .where(
-                    SourceDepartment.source_id == Source.id,
-                    SourceDepartment.department_id == user.department_id,
-                )
-            ),
+        # Only show: global docs (no departments) OR docs overlapping the
+        # user's department set. Empty set → only global docs.
+        user_dept_ids = list(user.department_ids)
+        global_clause = ~exists(
+            select(SourceDepartment.source_id)
+            .where(SourceDepartment.source_id == Source.id)
         )
+        if user_dept_ids:
+            dept_filter = or_(
+                global_clause,
+                exists(
+                    select(SourceDepartment.source_id)
+                    .where(
+                        SourceDepartment.source_id == Source.id,
+                        SourceDepartment.department_id.in_(user_dept_ids),
+                    )
+                ),
+            )
+        else:
+            dept_filter = global_clause
         base = base.where(dept_filter)
         count_base = count_base.where(dept_filter)
     elif scope_level is None:
@@ -319,10 +323,11 @@ async def upload_source(
     # Scope validation: own_dept users can only assign their own department
     perms = _get_user_permissions(user)
     if user.role != "admin" and "doc:create:all" not in perms:
-        # User only has doc:create:own_dept
+        # User only has doc:create:own_dept — every assigned dept must overlap.
+        user_depts = set(user.department_ids)
         for did in dept_uuids:
-            if did != user.department_id:
-                raise HTTPException(403, "You can only assign documents to your own department")
+            if did not in user_depts:
+                raise HTTPException(403, "You can only assign documents to your own departments")
 
     repo = Repository(db)
     source = Source(
@@ -453,9 +458,10 @@ async def update_source(
         # Permission check: own_dept users may only assign their own department
         perms = _get_user_permissions(_user)
         if _user.role != "admin" and "doc:edit:all" not in perms:
+            user_depts = set(_user.department_ids)
             for did in body.department_ids:
-                if did != _user.department_id:
-                    raise HTTPException(403, "You can only assign documents to your own department")
+                if did not in user_depts:
+                    raise HTTPException(403, "You can only assign documents to your own departments")
 
         old_dept_rows = (await db.execute(
             select(SourceDepartment.department_id).where(SourceDepartment.source_id == source_id)
