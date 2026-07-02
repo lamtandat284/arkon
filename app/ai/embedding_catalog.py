@@ -59,6 +59,18 @@ EMBEDDING_CATALOG: dict[str, EmbeddingModelSpec] = {
         cost_per_1m_tokens=0.15,
         notes="Multimodal (text, image, video, audio, PDF). 8K input window. Stable Apr 2026.",
     ),
+    
+    # --- Ollama (Local) ---
+    "ollama/nomic-embed-text": EmbeddingModelSpec(
+        id="ollama/nomic-embed-text",
+        provider="ollama",
+        model_id="nomic-embed-text",
+        dimension=768,
+        max_input_tokens=8192,
+        label="Nomic Embed Text (Local, 768d)",
+        cost_per_1m_tokens=0.0,
+        notes="Local Ollama embedding. Free, no API key required.",
+    ),
     # --- OpenAI ---
     "openai/text-embedding-3-small": EmbeddingModelSpec(
         id="openai/text-embedding-3-small",
@@ -112,3 +124,4 @@ def list_specs_by_provider(provider: str) -> list[EmbeddingModelSpec]:
 
 def specs_for_dimension(dimension: int) -> Iterable[EmbeddingModelSpec]:
     return (s for s in EMBEDDING_CATALOG.values() if s.dimension == dimension)
+

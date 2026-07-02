@@ -113,6 +113,21 @@ LLM_CATALOG: dict[str, LLMModelSpec] = {
             "Audio input charged at $0.50/1M."
         ),
     ),
+    
+    # --- Ollama (Local) ---
+    "ollama/llama3": LLMModelSpec(
+        id="ollama/llama3",
+        provider="ollama",
+        model_id="llama3",
+        context_window_tokens=128_000,
+        max_output_tokens=8_000,
+        supports_tools=True,
+        supports_vision=False,
+        label="Llama 3 (Local)",
+        cost_per_1m_input_tokens=0.0,
+        cost_per_1m_output_tokens=0.0,
+        notes="Local Ollama model. Free, no API key required.",
+    ),
     # --- OpenAI ---
     "openai/gpt-5.4": LLMModelSpec(
         id="openai/gpt-5.4",
@@ -212,3 +227,4 @@ def derive_spec_id(provider: str, model_id: str) -> Optional[str]:
         if spec.provider == provider and spec.model_id == model_id:
             return spec.id
     return None
+
